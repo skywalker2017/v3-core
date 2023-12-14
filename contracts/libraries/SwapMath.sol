@@ -12,9 +12,9 @@ library SwapMath {
     /// @param sqrtRatioCurrentX96 The current sqrt price of the pool
     /// @param sqrtRatioTargetX96 The price that cannot be exceeded, from which the direction of the swap is inferred
     /// @param liquidity The usable liquidity
-    /// @param amountRemaining How much input or output amount is remaining to be swapped in/out
+    /// @param amountRemaining How much input or output amount is remaining to be swapped in/out 待交易的token总量
     /// @param feePips The fee taken from the input amount, expressed in hundredths of a bip
-    /// @return sqrtRatioNextX96 The price after swapping the amount in/out, not to exceed the price target
+    /// @return sqrtRatioNextX96 The price after swapping the amount in/out, not to exceed the price target 交易后的价格
     /// @return amountIn The amount to be swapped in, of either token0 or token1, based on the direction of the swap
     /// @return amountOut The amount to be received, of either token0 or token1, based on the direction of the swap
     /// @return feeAmount The amount of input that will be taken as a fee
@@ -22,7 +22,7 @@ library SwapMath {
         uint160 sqrtRatioCurrentX96,
         uint160 sqrtRatioTargetX96,
         uint128 liquidity,
-        int256 amountRemaining,
+        int256 amountRemaining, // 注意是signedin t
         uint24 feePips
     )
         internal
@@ -34,16 +34,20 @@ library SwapMath {
             uint256 feeAmount
         )
     {
+        // 交易方向token1->token0
         bool zeroForOne = sqrtRatioCurrentX96 >= sqrtRatioTargetX96;
         bool exactIn = amountRemaining >= 0;
 
         if (exactIn) {
             uint256 amountRemainingLessFee = FullMath.mulDiv(uint256(amountRemaining), 1e6 - feePips, 1e6);
+            // 根据流动性，价格和价格区间计算可以提供的token总数
             amountIn = zeroForOne
                 ? SqrtPriceMath.getAmount0Delta(sqrtRatioTargetX96, sqrtRatioCurrentX96, liquidity, true)
                 : SqrtPriceMath.getAmount1Delta(sqrtRatioCurrentX96, sqrtRatioTargetX96, liquidity, true);
+                // 需要下一个ticker继续处理
             if (amountRemainingLessFee >= amountIn) sqrtRatioNextX96 = sqrtRatioTargetX96;
             else
+                // 当前ticker流动性充足，通过token数，流动性，当前价格计算新的价格 
                 sqrtRatioNextX96 = SqrtPriceMath.getNextSqrtPriceFromInput(
                     sqrtRatioCurrentX96,
                     liquidity,
@@ -54,6 +58,7 @@ library SwapMath {
             amountOut = zeroForOne
                 ? SqrtPriceMath.getAmount1Delta(sqrtRatioTargetX96, sqrtRatioCurrentX96, liquidity, false)
                 : SqrtPriceMath.getAmount0Delta(sqrtRatioCurrentX96, sqrtRatioTargetX96, liquidity, false);
+                // 当前ticker流动性不满足总交易的数目，需要下一个ticker继续处理
             if (uint256(-amountRemaining) >= amountOut) sqrtRatioNextX96 = sqrtRatioTargetX96;
             else
                 sqrtRatioNextX96 = SqrtPriceMath.getNextSqrtPriceFromOutput(
@@ -63,7 +68,7 @@ library SwapMath {
                     zeroForOne
                 );
         }
-
+        // 是否达到当前ticker的流动性限制
         bool max = sqrtRatioTargetX96 == sqrtRatioNextX96;
 
         // get the input/output amounts
@@ -92,6 +97,14 @@ library SwapMath {
             // we didn't reach the target, so take the remainder of the maximum input as fee
             feeAmount = uint256(amountRemaining) - amountIn;
         } else {
+            // fee = amountIn * f / (1e6 - f) f:fee percentage
+            // a = amountIn
+            // f = feePips 
+            // x = 需要增加的token数量 amountIn + fee
+            // fee = x*f
+            // x = a +fee = a + x*f
+            // x * (1 - f) = a
+            // x = a/(1 - f)
             feeAmount = FullMath.mulDivRoundingUp(amountIn, feePips, 1e6 - feePips);
         }
     }

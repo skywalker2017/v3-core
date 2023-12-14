@@ -71,6 +71,7 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
         bool unlocked;
     }
     /// @inheritdoc IUniswapV3PoolState
+    // immutable 类型直接保存在bytecode中，因此slot0可以保存在第一个slot位置
     Slot0 public override slot0;
 
     /// @inheritdoc IUniswapV3PoolState
@@ -118,7 +119,7 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
         int24 _tickSpacing;
         (factory, token0, token1, fee, _tickSpacing) = IUniswapV3PoolDeployer(msg.sender).parameters();
         tickSpacing = _tickSpacing;
-
+        // 根据tick间距换算每个tick中最大的流动性
         maxLiquidityPerTick = Tick.tickSpacingToMaxLiquidityPerTick(_tickSpacing);
     }
 
@@ -138,6 +139,7 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
     /// @dev This function is gas optimized to avoid a redundant extcodesize check in addition to the returndatasize
     /// check
     function balance0() private view returns (uint256) {
+        // 避免使用extcodesize（合约代码大小）和 returndatasize（返回值大小）以减少gas费用
         (bool success, bytes memory data) =
             token0.staticcall(abi.encodeWithSelector(IERC20Minimal.balanceOf.selector, address(this)));
         require(success && data.length >= 32);
@@ -268,6 +270,17 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
 
     /// @inheritdoc IUniswapV3PoolActions
     /// @dev not locked because it initializes unlocked
+    /** 
+    Y = token 0 = eth
+    X = token 1 = usdc
+    P = Y/X
+    Q96 = 2 ** 96
+    P = (sqrtPriceX96/Q96)**2 = 1.0001**tick
+    decimals_0 = 1e18
+    decimals_1 = 1e6
+    price = p*decimals_0/decimals_1
+    tick = 2*(log(sqrtPriceX96/Q96)) / log(1.0001)
+     */
     function initialize(uint160 sqrtPriceX96) external override {
         require(slot0.sqrtPriceX96 == 0, 'AI');
 
@@ -313,7 +326,7 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
         )
     {
         checkTicks(params.tickLower, params.tickUpper);
-
+        // 避免后面多次从storage读取变量
         Slot0 memory _slot0 = slot0; // SLOAD for gas optimization
 
         position = _updatePosition(
@@ -462,6 +475,7 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
         bytes calldata data
     ) external override lock returns (uint256 amount0, uint256 amount1) {
         require(amount > 0);
+        // 当burn时，amount0Int 和 amount1Int 为负数
         (, int256 amount0Int, int256 amount1Int) =
             _modifyPosition(
                 ModifyPositionParams({
@@ -479,6 +493,7 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
         uint256 balance1Before;
         if (amount0 > 0) balance0Before = balance0();
         if (amount1 > 0) balance1Before = balance1();
+        // 讲对应token和amount转账到当前地址
         IUniswapV3MintCallback(msg.sender).uniswapV3MintCallback(amount0, amount1, data);
         if (amount0 > 0) require(balance0Before.add(amount0) <= balance0(), 'M0');
         if (amount1 > 0) require(balance1Before.add(amount1) <= balance1(), 'M1');
@@ -596,15 +611,20 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
     function swap(
         address recipient,
         bool zeroForOne,
-        int256 amountSpecified,
+        int256 amountSpecified, // 需要交易的token总数
         uint160 sqrtPriceLimitX96,
         bytes calldata data
-    ) external override noDelegateCall returns (int256 amount0, int256 amount1) {
+    ) external override noDelegateCall returns (int256 amount0, int256 amount1) { // 正表示token存入此合约，负表示token提现给用户
         require(amountSpecified != 0, 'AS');
 
         Slot0 memory slot0Start = slot0;
 
         require(slot0Start.unlocked, 'LOK');
+        /* 
+              token1   | token0   |
+        limit    <------p         | zeroForOne   
+                 p------>    limit| zeroForOne   
+         */
         require(
             zeroForOne
                 ? sqrtPriceLimitX96 < slot0Start.sqrtPriceX96 && sqrtPriceLimitX96 > TickMath.MIN_SQRT_RATIO
@@ -623,7 +643,7 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
                 tickCumulative: 0,
                 computedLatestObservation: false
             });
-
+        // 是否输入是确定的，反之输出确定
         bool exactInput = amountSpecified > 0;
 
         SwapState memory state =
@@ -642,7 +662,7 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
             StepComputations memory step;
 
             step.sqrtPriceStartX96 = state.sqrtPriceX96;
-
+            // 获取下一个tick
             (step.tickNext, step.initialized) = tickBitmap.nextInitializedTickWithinOneWord(
                 state.tick,
                 tickSpacing,
@@ -650,6 +670,7 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
             );
 
             // ensure that we do not overshoot the min/max tick, as the tick bitmap is not aware of these bounds
+            // 确保tick不超过边界
             if (step.tickNext < TickMath.MIN_TICK) {
                 step.tickNext = TickMath.MIN_TICK;
             } else if (step.tickNext > TickMath.MAX_TICK) {
@@ -657,11 +678,18 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
             }
 
             // get the price for the next tick
+            // 下一个tick的价格
             step.sqrtPriceNextX96 = TickMath.getSqrtRatioAtTick(step.tickNext);
 
             // compute values to swap to the target tick, price limit, or point where input/output amount is exhausted
             (state.sqrtPriceX96, step.amountIn, step.amountOut, step.feeAmount) = SwapMath.computeSwapStep(
                 state.sqrtPriceX96,
+                /* 
+                价格限制 limit:l  priceNext:p
+                   token1 | token0 |
+                   max(l, p) <---- zeroForOne
+                   oneForZero -----> min(p, l)
+                 */
                 (zeroForOne ? step.sqrtPriceNextX96 < sqrtPriceLimitX96 : step.sqrtPriceNextX96 > sqrtPriceLimitX96)
                     ? sqrtPriceLimitX96
                     : step.sqrtPriceNextX96,
@@ -764,6 +792,18 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
             if (state.protocolFee > 0) protocolFees.token1 += state.protocolFee;
         }
 
+        /* 
+         是否0到1的兑换  输入是否确定
+         zeroForOne | exactInput |
+            true    | true       | amount0 = specified - remaining  
+                    |            | amount1 = calculated  
+            true    | false      | amount0 = calculated
+                    |            | amount1 = specified - remaining 
+            false   | true       | amount0 = calculated
+                    |            | amount1 = specified - remaining             
+            false   | false      | amount0 = specified - remaining
+                    |            | amount1 = calculated
+         */
         (amount0, amount1) = zeroForOne == exactInput
             ? (amountSpecified - state.amountSpecifiedRemaining, state.amountCalculated)
             : (state.amountCalculated, amountSpecified - state.amountSpecifiedRemaining);
