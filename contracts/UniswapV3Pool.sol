@@ -93,6 +93,19 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
     /// @inheritdoc IUniswapV3PoolState
     mapping(int24 => Tick.Info) public override ticks;
     /// @inheritdoc IUniswapV3PoolState
+    /*
+    tickBitmap        key       |     value
+                 word position  |  bit position
+    tick = int24     int16      |     int8
+    e.g.        1111110011110000|   000000111
+                     key=-784   |      n=7
+                      key       | value的第n位设置为1
+    */
+    /*
+    flip: 将uint256的第n位反转
+    e.g. n=7  0100...1000100 XOR 0000...1000000 => 0100...0000100
+    */
+
     mapping(int16 => uint256) public override tickBitmap;
     /// @inheritdoc IUniswapV3PoolState
     mapping(bytes32 => Position.Info) public override positions;
@@ -575,7 +588,8 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
     // the top level state of the swap, the results of which are recorded in storage at the end
     struct SwapState {
         // the amount remaining to be swapped in/out of the input/output asset
-        int256 amountSpecifiedRemaining;
+        // amountSpecifiedRemaining在swap过程中不断趋近于0
+        int256 amountSpecifiedRemaining; // in amountSpecifiedRemaining > 0  out amountSpecifiedRemaining < 0
         // the amount already swapped out/in of the output/input asset
         int256 amountCalculated;
         // current sqrt(price)
@@ -666,6 +680,10 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
             (step.tickNext, step.initialized) = tickBitmap.nextInitializedTickWithinOneWord(
                 state.tick,
                 tickSpacing,
+                // token1 | token0
+                //.......tick......
+                // zero for one --> price decrease --> lte
+                // one for zero --> price increase --> gt
                 zeroForOne
             );
 
@@ -699,10 +717,14 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
             );
 
             if (exactInput) {
+                // amountSpecifiedRemaining > 0
                 state.amountSpecifiedRemaining -= (step.amountIn + step.feeAmount).toInt256();
+                // amountCalculated < 0 表示out因此要小于0
                 state.amountCalculated = state.amountCalculated.sub(step.amountOut.toInt256());
             } else {
+                // amountSpecifiedRemaining < 0  表示out的remaining因此小于0
                 state.amountSpecifiedRemaining += step.amountOut.toInt256();
+                // amountCalculated > 0 表示input因此大于0
                 state.amountCalculated = state.amountCalculated.add((step.amountIn + step.feeAmount).toInt256());
             }
 
@@ -737,7 +759,9 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
                     int128 liquidityNet =
                         ticks.cross(
                             step.tickNext,
+                            // 判断input token 如果input token是0，用当前状态的token0 fee
                             (zeroForOne ? state.feeGrowthGlobalX128 : feeGrowthGlobal0X128),
+                            // 判断input token 如果input token是0，用全局的token0 fee
                             (zeroForOne ? feeGrowthGlobal1X128 : state.feeGrowthGlobalX128),
                             cache.secondsPerLiquidityCumulativeX128,
                             cache.tickCumulative,
@@ -745,13 +769,18 @@ contract UniswapV3Pool is IUniswapV3Pool, NoDelegateCall {
                         );
                     // if we're moving leftward, we interpret liquidityNet as the opposite sign
                     // safe because liquidityNet cannot be type(int128).min
+                    // price --> liquidNet为+
+                    // <--- price liquidNet为-
+                    // 这里要都变成+的，因为tick移动流动性增加了
                     if (zeroForOne) liquidityNet = -liquidityNet;
 
                     state.liquidity = LiquidityMath.addDelta(state.liquidity, liquidityNet);
                 }
-
+                // todo 不太理解
+                // zeroForOne: 确保其 < 当前tick所以 -1
+                // oneForZero: 确保新tick > 当前tick
                 state.tick = zeroForOne ? step.tickNext - 1 : step.tickNext;
-            } else if (state.sqrtPriceX96 != step.sqrtPriceStartX96) {
+            } else if (state.sqrtPriceX96 != step.sqrtPriceStartX96) { // 这里确保价格确实有变动
                 // recompute unless we're on a lower tick boundary (i.e. already transitioned ticks), and haven't moved
                 state.tick = TickMath.getTickAtSqrtRatio(state.sqrtPriceX96);
             }

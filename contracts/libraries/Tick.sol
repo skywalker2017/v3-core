@@ -19,7 +19,7 @@ library Tick {
         // 引用此tick的position的总流动性
         uint128 liquidityGross;
         // amount of net liquidity added (subtracted) when tick is crossed from left to right (right to left),
-        // 贯穿刻度时的流动性变化
+        // 贯穿刻度时的流动性增量
         int128 liquidityNet;
         // fee growth per unit of liquidity on the _other_ side of this tick (relative to the current tick)
         // only has relative meaning, not absolute — the value depends on when the tick is initialized
@@ -171,8 +171,8 @@ library Tick {
     /// @notice Transitions to next tick as needed by price movement
     /// @param self The mapping containing all tick information for initialized ticks
     /// @param tick The destination tick of the transition
-    /// @param feeGrowthGlobal0X128 The all-time global fee growth, per unit of liquidity, in token0
-    /// @param feeGrowthGlobal1X128 The all-time global fee growth, per unit of liquidity, in token1
+    /// @param feeGrowthGlobal0X128 The all-time global fee growth, per unit of liquidity, in token0 // token0 的单位fee
+    /// @param feeGrowthGlobal1X128 The all-time global fee growth, per unit of liquidity, in token1 // token1 的单位fee
     /// @param secondsPerLiquidityCumulativeX128 The current seconds per liquidity
     /// @param tickCumulative The tick * time elapsed since the pool was first initialized
     /// @param time The current block.timestamp

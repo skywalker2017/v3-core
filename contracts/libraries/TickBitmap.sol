@@ -6,6 +6,39 @@ import './BitMath.sol';
 /// @title Packed tick initialized state library
 /// @notice Stores a packed mapping of tick index to its initialized state
 /// @dev The mapping uses int16 for keys since ticks are represented as int24 and there are 256 (2^8) values per word.
+
+    /*
+    tickBitmap        key       |     value
+                 word position  |  bit position
+    tick = int24     int16      |     int8
+    e.g.        1111110011110000|   000000111
+                     key=-784   |      n=7
+                      key       | value的第n位设置为1
+    */
+    /*
+    flip: 将uint256的第n位反转
+    e.g. n=7  0100...1000100 XOR 0000...1000000 => 0100...0000100
+    */
+    /* 
+    tickBitmap中获取next tick < tick（tickBitMap value中tick位置右侧距离tick位置最近的1的位置）
+    e.g. value = 011...011
+    1. mask = 000...1...111
+    2. mask & value = 000...011
+    3. 找到第一个bit=1的位置 pos = 1
+    4. 恢复为tick next tick = tick - bit pos + next bit pos 1111110011110000｜000000111
+                                                                           - 000000111
+                                                                           + 000000001 
+    中获取next tick > tick与上面类似 
+    e.g. value = 011...011
+    1. mask = 111...1...000
+    2. mask & value = 011...000
+    3. 找到第一个bit=1的位置 pos = 253
+    4. 恢复为tick next tick = tick - bit pos + next bit pos + 1 = 1111110011110000｜00000111
+                                                                                 - 00000111
+                                                                                 + 11111101
+                                                                                 + 00000001 
+                                                                                 */
+
 library TickBitmap {
     /// @notice Computes the position in the mapping where the initialized bit for a tick lives
     /// @param tick The tick for which to compute the position
@@ -20,6 +53,7 @@ library TickBitmap {
     /// @param self The mapping in which to flip the tick
     /// @param tick The tick to flip
     /// @param tickSpacing The spacing between usable ticks
+    // 翻转某个tick 有/无流动性
     function flipTick(
         mapping(int16 => uint256) storage self,
         int24 tick,
@@ -32,7 +66,7 @@ library TickBitmap {
     }
 
     /// @notice Returns the next initialized tick contained in the same word (or adjacent word) as the tick that is either
-    /// to the left (less than or equal to) or right (greater than) of the given tick
+    /// to the left (less than or equal to) or right (greater than) of the given tick 获取nextTick
     /// @param self The mapping in which to compute the next initialized tick
     /// @param tick The starting tick
     /// @param tickSpacing The spacing between usable ticks
@@ -59,6 +93,7 @@ library TickBitmap {
             // overflow/underflow is possible, but prevented externally by limiting both tickSpacing and tick
             next = initialized
                 ? (compressed - int24(bitPos - BitMath.mostSignificantBit(masked))) * tickSpacing
+                // masked == 0
                 : (compressed - int24(bitPos)) * tickSpacing;
         } else {
             // start from the word of the next tick, since the current tick state doesn't matter
